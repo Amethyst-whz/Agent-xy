@@ -1,8 +1,14 @@
 import 'dotenv/config'
-import { streamText, type ModelMessage, stepCountIs } from 'ai'
+import { type ModelMessage } from 'ai'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createMockModel } from './mock-model'
 import { createInterface } from 'readline'
+import { weatherTool } from './tools/utility-tools'
+import { agentLoop } from './agent/loop'
+
+const tools = {get_weather: weatherTool}
+
+const SYSTEM_PROMPT = '你是小因，代号（xy），一个专注于软件开发的 AI 助手。你说话简洁直接，喜欢用代码示例来解释问题。如果用户的问题不够清晰，你会反问而不是瞎猜。'
 
 
 const qwen = createOpenAI({
@@ -41,23 +47,12 @@ function ask(){
     }
 
     messages.push({role: 'user', content: trimmed})
-    
-    const result = streamText({
-      model: model as any,
-      messages,
-    })
-    process.stdout.write('Assistant: ')
-    let fullResponse = ''
-    for await (const chunk of result.textStream) {
-      process.stdout.write(chunk)
-      fullResponse += chunk
-    }
-    console.log('\n')
 
-    messages.push({ role: 'assistant', content: fullResponse })
+    process.stdout.write('Assistant: ')
+    await agentLoop(model as any, tools, messages, SYSTEM_PROMPT)
     ask()
   })
 }
 
-console.log('super agent v0.1(type "exit" to exit)')
+console.log('agent-xy v0.2(type "exit" to exit)')
 ask()
