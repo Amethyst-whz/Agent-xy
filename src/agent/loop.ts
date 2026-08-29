@@ -1,6 +1,7 @@
 import { streamText, type ModelMessage } from "ai";
 import { detect, resetHistory, recordCall, recordResult } from './loop-detection'
 import { isRetryable, calculateDelay, sleep } from './retry'
+import { ToolRegistry } from '../tools/tool-registry'
 
 const MAX_STEPS = 15 // 最大循环次数
 const MAX_RETRIES = 3 // 最大重试次数
@@ -12,7 +13,7 @@ export interface BudgetState {
 
 export async function agentLoop(
   model: any,
-  tools: any,
+  registry: ToolRegistry,
   messages: ModelMessage[],
   system: string,
   budget: BudgetState
@@ -37,7 +38,7 @@ export async function agentLoop(
       try {
         const result = streamText({
           model,
-          tools,
+          tools: registry.toAISDKFormat(),
           messages,
           system,
           maxRetries: 0,  // 不配置重试，就只会跑一次
