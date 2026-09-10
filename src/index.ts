@@ -6,7 +6,7 @@ import { createInterface } from 'readline'
 import { allTools } from './tools'
 import { ToolRegistry, type ToolDefinition } from './tools/registry'
 import { agentLoop, type BudgetState } from './agent/loop'
-import { MCPClient } from './tools/mcp-client'
+import { MCPClient, githubMcpLaunch } from './tools/mcp-client'
 import { SessionStore } from './session/store'
 import { WORKSPACE_DIR, ensureWorkspace, workspacePromptSection } from './workspace'
 
@@ -56,8 +56,10 @@ async function connectMCP() {
   if (githubToken && canSpawn) {
     console.log('\n连接 GitHub MCP Server...');
     try {
+      // Windows 上 pnpm 只有 .cmd 外壳，spawn 无法直接执行 → 内部按平台处理（见 githubMcpLaunch）
+      const launch = githubMcpLaunch();
       const client = new MCPClient(
-        'pnpm', ['dlx', '@modelcontextprotocol/server-github'],
+        launch.command, launch.args,
         { GITHUB_PERSONAL_ACCESS_TOKEN: githubToken },
       );
       const tools = await registry.registerMCPServer('github', client);
@@ -101,9 +103,9 @@ async function main() {
 
   // 工作区提示：把 Excel/Word/PDF 放进来，直接说文件名即可
   ensureWorkspace();
-  console.log(`\n=== 工作区 ===`);
-  console.log(`目录: ${WORKSPACE_DIR}`);
-  console.log(`把办公文档放进该目录，然后直接说文件名即可（如：读 成绩表.xlsx 统计各班人数）`);
+  //console.log(`\n=== 工作区 ===`);
+  //console.log(`目录: ${WORKSPACE_DIR}`);
+  //console.log(`把办公文档放进该目录，然后直接说文件名即可（如：读 成绩表.xlsx 统计各班人数）`);
   
 
   const deferredSummary = registry.getDeferredToolSummary();  // 获取延迟工具的摘要

@@ -7,6 +7,21 @@ interface MCPTool {
   inputSchema: Record<string, any>
 }
 
+/**
+ * 构造 GitHub MCP server 的启动方式。
+ *
+ * 为什么需要它：Windows 上通过 npm 安装的 pnpm 只有 `pnpm.cmd` / `pnpm.ps1` 外壳（没有 pnpm.exe），
+ * 而 Node 的 spawn 不经过 shell，不会解析 .cmd（只在 PATH 里找 名字 / .com / .exe），
+ * 直接 spawn('pnpm') 必然 ENOENT；Node ≥ 20.12 对 .cmd 更是直接抛 EINVAL。
+ * 所以 Windows 必须用 cmd.exe /c 包一层；macOS / Linux 上 pnpm 是可执行脚本，保持直接执行。
+ */
+export function githubMcpLaunch(): { command: string; args: string[] } {
+  if (process.platform === 'win32') {
+    return { command: 'cmd.exe', args: ['/c', 'pnpm', 'dlx', '@modelcontextprotocol/server-github'] }
+  }
+  return { command: 'pnpm', args: ['dlx', '@modelcontextprotocol/server-github'] }
+}
+
 
 export interface MCPCallResult {
   content: Array<{ type: 'text', text?: string }>,
@@ -34,8 +49,14 @@ export class MCPClient {
       env: { ...process.env, ...this.env }   // 主进程环境变量传给子进程，用于访问环境变量
     })
 
-    this.process.on('error', (error) => {  // 子进程错误事件
+    this.process.on('error', (error) => {  // 子进程错误事件（spawn 失败：命令不存在 / 权限不足等）
       console.error(` [MCP] 进程启动失败：${error.message}`)
+      // 与 exit 分支同理：立刻 reject 所有 pending 请求。
+      // 否则子进程根本不存在，只能干等 send() 的 15 秒超时，
+      // 真正的错误（如 spawn ENOENT）会被掩盖成一句含糊的 "request timeout"
+      const err = new Error(` [MCP] 进程启动失败：${error.message}`)
+      for (const p of this.pending.values()) p.reject(err)
+      this.pending.clear()
     })
 
     // 收集 stderr，便于子进程异常退出时排查原因
