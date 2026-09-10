@@ -23,3 +23,11 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+# 工作区：用户投喂的办公文档（Excel/Word/PDF），不进版本库
+workspace/*
+!workspace/.gitkeep
+!workspace/README.md
+
+# 会话存档（含对话原文，可能包含学生信息等敏感数据）
+.sessions/
