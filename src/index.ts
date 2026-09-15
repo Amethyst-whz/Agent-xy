@@ -8,7 +8,11 @@ import { ToolRegistry, type ToolDefinition } from './tools/registry'
 import { agentLoop, type BudgetState } from './agent/loop'
 import { MCPClient, githubMcpLaunch } from './tools/mcp-client'
 import { SessionStore } from './session/store'
-import { WORKSPACE_DIR, ensureWorkspace, workspacePromptSection } from './workspace'
+// 教程当前版：下面是老师最新版的 4 个 pipe
+import { PromptBuilder, coreRules, toolGuide, deferredTools, sessionContext, type PromptContext } from './context/prompt-builder'
+// [自己加的] 工作区目录（配 src/workspace.ts）+ 你自己加的两个 pipe
+import { WORKSPACE_DIR, ensureWorkspace } from './workspace'
+import { officeGuide, workspaceContext } from './context/custom-sections'
 
 
 const qwen = createOpenAI({  // 创建 OpenAI 模型, 用于生成文本
@@ -92,6 +96,7 @@ async function main() {
   }
 
 
+  // [老师早期版本] 工具统计：老师早期版本里有，最新版（PromptBuilder 那版）删了；留着只是启动时方便看
   const allCount = registry.getAll().length;
   const activeTools = registry.getActiveTools();
   const estimate = registry.countTokenEstimate();
@@ -101,24 +106,37 @@ async function main() {
   console.log(`延迟工具数: ${allCount - activeTools.length}`);
   console.log(`估算token数: ~${estimate.active}(活跃) + ~${estimate.deferred}(延迟，不占prompt)`);
 
-  // 工作区提示：把 Excel/Word/PDF 放进来，直接说文件名即可
+  // [自己加的] 工作区：把 Excel/Word/PDF 放进来，直接说文件名即可
   ensureWorkspace();
   //console.log(`\n=== 工作区 ===`);
   //console.log(`目录: ${WORKSPACE_DIR}`);
   //console.log(`把办公文档放进该目录，然后直接说文件名即可（如：读 成绩表.xlsx 统计各班人数）`);
-  
-
-  const deferredSummary = registry.getDeferredToolSummary();  // 获取延迟工具的摘要
-  const workspaceSection = workspacePromptSection();  // 工作区说明（含文件清单，内容易变 → 放系统提示最后，避免影响前面静态内容的 KV Cache）
-  const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
-你有内置工具和 MCP 工具可用。
-如果你需要的工具不在当前列表中，使用 tool_search 工具搜索可用工具。
-处理 Excel / Word / PDF 办公文档时：先用 read_excel / read_word 的 overview / outline 模式确认文件结构，再做检索或统计。
-引用任何数据都必须来自工具返回的真实内容；检索不到就如实说明"未在文件中检索到"，绝不推测或编造。
-回答要简洁直接。${deferredSummary}${workspaceSection}`;
 
 
-  
+  // Prompt Pipe 组装 system prompt（顺序即优先级，也即 KV Cache 的友好度：静态在前、易变在后）
+  const builder = new PromptBuilder()
+    .pipe('coreRules', coreRules())            // 教程当前版：身份 + 行为准则
+    .pipe('toolGuide', toolGuide())            // 教程当前版：工具数量
+    .pipe('deferredTools', deferredTools())    // 教程当前版：延迟工具清单
+    .pipe('sessionContext', sessionContext())  // 教程当前版：历史消息条数
+    // ↓↓↓ [自己加的] 重做 index.ts 时记得补回这两行（实现在 custom-sections.ts）↓↓↓
+    .pipe('officeGuide', officeGuide())              // 办公文档提示词
+    .pipe('workspaceContext', workspaceContext())    // 工作区说明：含文件清单，易变 → 必须最后
+    // ↑↑↑ [自己加的] ↑↑↑
+
+  // 注意：这里用的就是教程里的 PromptContext，没有自己加的字段
+  const promptCtx: PromptContext = {
+    toolCount: registry.getActiveTools().length,  // 活跃工具数
+    deferredToolSummary: registry.getDeferredToolSummary(),  // 延迟工具摘要
+    sessionMessageCount: messages.length,
+    sessionId,
+  }
+
+  const SYSTEM = builder.build(promptCtx)
+
+  // [自己加的] 默认不打印（debug 会把每个 pipe 再跑一遍）；排查提示词拼装时加 --debug-prompt
+  if (process.argv.includes('--debug-prompt')) builder.debug(promptCtx)
+
   const rl = createInterface({   // 创建 readline 接口, 用于从命令行读取用户输入
     input: process.stdin,
     output: process.stdout,
