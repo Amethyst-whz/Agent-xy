@@ -2,11 +2,19 @@ import { streamText, type ModelMessage } from "ai";
 import { detect, resetHistory, recordCall, recordResult } from './loop-detection'
 import { isRetryable, calculateDelay, sleep } from './retry'
 import { ToolRegistry } from '../tools/registry'
+// [自己加的] 上下文压缩：教程第12节的 compressor，原来只是躺在 src/context/ 里没有接线
+import { estimateTokens, microcompact, summarize } from '../context/compressor'
 
 
 const MAX_STEPS = 15 // 最大循环次数
 const MAX_RETRIES = 3 // 最大重试次数
 const TOKEN_BUDGET = 50000 // token 预算
+
+// [自己加的] 消息估算 token 超过这个值才做压缩。
+// 为什么要这道闸：summarize 内部会用 LLM 生成摘要（多一次真实调用），
+// 如果每步都无条件跑，长会话的每一步都要多付一次摘要的钱；这里先按总量拦一道。
+// 可用环境变量临时改小（例如 CONTEXT_COMPRESS_THRESHOLD=1）来观察压缩是否真的触发。
+const CONTEXT_COMPRESS_THRESHOLD = Number(process.env.CONTEXT_COMPRESS_THRESHOLD ?? 6000)
 
 export interface BudgetState {
   used: number
@@ -21,12 +29,32 @@ export async function agentLoop(
 ) {
   let step = 0
   let totalTokens = 0  // 总token数
+  let summary = ''  // [自己加的] 累积的对话摘要，跨步骤复用；下次压缩时作为"已有摘要"传进去
 
   resetHistory()  // 重置工具执行的历史记录
 
   while (step < MAX_STEPS) {
     step++
     console.log(`\n--- Step ${step} ---`);
+
+    // [自己加的] 上下文压缩（教程第12节接线）：microcompact 先清掉旧的工具结果，仍超阈值再用 LLM 摘要。
+    // 关键点：这里压的是"发给模型的那一份"，调用方传进来的 messages 数组保持完整、绝不改动。
+    //   原因：index.ts 里靠 `messages.slice(beforeLen)` 找出本轮新增消息写进会话存档，
+    //   如果在循环里就地删消息，beforeLen 的下标就错位了，会话持久化会写坏。
+    let stepMessages: ModelMessage[] = messages
+    const msgTokens = estimateTokens(messages)
+    if (msgTokens > CONTEXT_COMPRESS_THRESHOLD) {
+      const compacted = microcompact(messages)
+      if (compacted.cleared > 0) {
+        console.log(` [上下文] 清空 ${compacted.cleared} 条旧工具结果，估算 ${msgTokens} token`)
+      }
+      const compressed = await summarize(model, compacted.messages, summary)
+      if (compressed.compressedCount > 0) {
+        summary = compressed.summary
+        console.log(` [上下文] LLM 摘要压缩 ${compressed.compressedCount} 条旧消息`)
+      }
+      stepMessages = compressed.messages
+    }
 
     let hasToolCall = false  // 当前这轮是否有工具调用
     let fullText = ''  // 当前这轮的模型输出
@@ -41,7 +69,7 @@ export async function agentLoop(
         const result = streamText({
           model,
           tools: registry.toAISDKFormat(),
-          messages,
+          messages: stepMessages,  // [自己加的] 原来传的是 messages，现在传压缩后的那一份
           system,
           maxRetries: 0,  // 不配置重试，就只会跑一次
           onError: () => { }
