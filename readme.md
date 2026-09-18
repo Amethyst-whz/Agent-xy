@@ -264,19 +264,17 @@ agent: [调用get_waether 工具] -> 南昌今天晴，30摄氏度，东南风2�
 
 ## 常用 Git 操作
 
+本仓库**只推 GitHub**（主仓库）；Gitee 已降级为只读镜像，不再推送。
+
 ```bash
 # 1. 提交（一次）
 git add .
 git commit -m "feat: xxx"
 
-# 2. 分别推送
-git push origin main   # GitHub
-git push gitee main    # Gitee
+# 2. 推送
+git push origin main   # GitHub，唯一推送目标
 
-# 一键双推（GitHub + Gitee 同时）
-git push both main
-
-# 3. 拉取最新（以 GitHub 为准，防止两边分叉）
+# 3. 拉取最新
 git pull origin main
 ```
 
@@ -284,9 +282,15 @@ git pull origin main
 
 | 远程 | 用途 | 地址 |
 | --- | --- | --- |
-| `origin` | GitHub | https://github.com/Amethyst-whz/Agent-xy.git |
-| `gitee` | Gitee | https://gitee.com/amethyst_whz/agent-xy.git |
-| `both` | 一键双推 | fetch: GitHub / push: GitHub + Gitee |
+| `origin` | **GitHub（主仓库，提交推这里）** | https://github.com/Amethyst-whz/Agent-xy.git |
+| `gitee` | Gitee（只读镜像，仅 `git fetch gitee` 对比，不再推送） | https://gitee.com/amethyst_whz/agent-xy.git |
+
+> **为什么不再双推**：本仓库提交用的是 GitHub 专用邮箱
+> `204489340+Amethyst-whz@users.noreply.github.com`，而 Gitee 只统计「已绑定到 Gitee 账号的邮箱」，
+> 所以同一批提交推到 Gitee 也不会产生贡献绿点。
+> 更关键的是，原来的 `both` 远程（fetch 指向 GitHub、push 指向 Gitee）让人以为推了两个平台，
+> 实际只推了 Gitee —— 2026-09-15 ~ 09-17 的 3 个提交就是这么漏掉的。
+> **一个仓库只推一个平台，两边的绿点才拿得全。**
 
 ---
 
