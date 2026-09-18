@@ -264,33 +264,54 @@ agent: [调用get_waether 工具] -> 南昌今天晴，30摄氏度，东南风2�
 
 ## 常用 Git 操作
 
-本仓库**只推 GitHub**（主仓库）；Gitee 已降级为只读镜像，不再推送。
+本仓库**同时托管在 GitHub 和 Gitee**，两边都要推。
+在 `D:\AAA旅梦` 下跑根目录的脚本最省事（每个平台各自重试并汇报结果）：
+
+```powershell
+.\push-all.ps1 -Repos agent
+```
+
+手动推也可以（两个平台分别推）：
 
 ```bash
 # 1. 提交（一次）
 git add .
 git commit -m "feat: xxx"
 
-# 2. 推送
-git push origin main   # GitHub，唯一推送目标
-
-# 3. 拉取最新
-git pull origin main
+# 2. 推两个平台
+git push origin main   # GitHub
+git push gitee  main   # Gitee
 ```
 
 ### 远程仓库
 
-| 远程 | 用途 | 地址 |
+| 远程 | 平台 | 地址 |
 | --- | --- | --- |
-| `origin` | **GitHub（主仓库，提交推这里）** | https://github.com/Amethyst-whz/Agent-xy.git |
-| `gitee` | Gitee（只读镜像，仅 `git fetch gitee` 对比，不再推送） | https://gitee.com/amethyst_whz/agent-xy.git |
+| `origin` | GitHub | https://github.com/Amethyst-whz/Agent-xy.git |
+| `gitee` | Gitee | https://gitee.com/amethyst_whz/agent-xy.git |
 
-> **为什么不再双推**：本仓库提交用的是 GitHub 专用邮箱
-> `204489340+Amethyst-whz@users.noreply.github.com`，而 Gitee 只统计「已绑定到 Gitee 账号的邮箱」，
-> 所以同一批提交推到 Gitee 也不会产生贡献绿点。
-> 更关键的是，原来的 `both` 远程（fetch 指向 GitHub、push 指向 Gitee）让人以为推了两个平台，
-> 实际只推了 Gitee —— 2026-09-15 ~ 09-17 的 3 个提交就是这么漏掉的。
-> **一个仓库只推一个平台，两边的绿点才拿得全。**
+### 提交身份与绿点（重要，别乱改）
+
+绿点只认一件事：**提交里的 author email 有没有绑定到那个平台的账号**。
+
+- 本仓库统一用 `1023911002@qq.com`，它在 GitHub 和 Gitee 两边都已绑定，所以两个平台都计绿点。
+- ⚠️ **不要**改成任一平台的 noreply：
+  - GitHub noreply `204489340+Amethyst-whz@users.noreply.github.com` —— 只有 GitHub 认；
+  - Gitee noreply `17286562+amethyst_whz@user.noreply.gitee.com` —— 只有 Gitee 认。
+
+  本仓库在两个平台都有，一改就必有一边白干（这正是 2026-09-13/14 在 GitHub 丢绿点的原因）。
+- ⚠️ Gitee 有「**邮箱隐私保护**」：若把 `1023911002@qq.com` 设为 Gitee 保密邮箱，
+  推 Gitee 会被服务端 hook 直接拒绝，报 `Push will publish a hidden email, make email public or abandon related commits`。
+  保持该邮箱在 Gitee 为公开即可。
+
+### 推送失败怎么办（GitHub 直连很慢）
+
+GitHub 直连是通的，但很慢（实测单次请求 6~12 秒）且偶尔掉线，所以失败是常态，**重跑就行**。
+`push-all.ps1` 已内置每个平台 3 次重试。开了代理软件时可以临时走代理：
+
+```bash
+git -c http.https://github.com.proxy=http://127.0.0.1:7897 push origin main
+```
 
 ---
 
