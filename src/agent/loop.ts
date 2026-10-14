@@ -4,6 +4,15 @@ import { isRetryable, calculateDelay, sleep } from './retry'
 import { ToolRegistry } from '../tools/registry'
 // [自己加的] 上下文压缩：教程第12节的 compressor，原来只是躺在 src/context/ 里没有接线
 import { estimateTokens, microcompact, summarize } from '../context/compressor'
+import {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  TokenTracker,
+  estimateMessageTokens,
+  estimateMessagesTokens,
+  pruneOldHistory,
+  pruneToolResultsByTtl,
+  type MessageTimestamp,
+} from '../context/defense'
 
 
 const MAX_STEPS = 15 // 最大循环次数
@@ -15,6 +24,11 @@ const TOKEN_BUDGET = 50000 // token 预算
 // 如果每步都无条件跑，长会话的每一步都要多付一次摘要的钱；这里先按总量拦一道。
 // 可用环境变量临时改小（例如 CONTEXT_COMPRESS_THRESHOLD=1）来观察压缩是否真的触发。
 const CONTEXT_COMPRESS_THRESHOLD = Number(process.env.CONTEXT_COMPRESS_THRESHOLD ?? 6000)
+const CONTEXT_WINDOW_TOKENS = Number(process.env.CONTEXT_WINDOW_TOKENS ?? DEFAULT_CONTEXT_WINDOW_TOKENS)
+
+if (!Number.isFinite(CONTEXT_WINDOW_TOKENS) || CONTEXT_WINDOW_TOKENS <= 0) {
+  throw new Error('CONTEXT_WINDOW_TOKENS must be a positive number')
+}
 
 export interface BudgetState {
   used: number
@@ -25,10 +39,11 @@ export async function agentLoop(
   model: any,
   registry: ToolRegistry,
   messages: ModelMessage[],
-  system: string
+  system: string,
+  messageTimestamps: MessageTimestamp[] = [],
 ) {
   let step = 0
-  let totalTokens = 0  // 总token数
+  const tokenTracker = new TokenTracker()
   let summary = ''  // [自己加的] 累积的对话摘要，跨步骤复用；下次压缩时作为"已有摘要"传进去
 
   resetHistory()  // 重置工具执行的历史记录
@@ -37,14 +52,23 @@ export async function agentLoop(
     step++
     console.log(`\n--- Step ${step} ---`);
 
+    while (messageTimestamps.length < messages.length) {
+      messageTimestamps.push(Date.now())
+    }
+
     // [自己加的] 上下文压缩（教程第12节接线）：microcompact 先清掉旧的工具结果，仍超阈值再用 LLM 摘要。
     // 关键点：这里压的是"发给模型的那一份"，调用方传进来的 messages 数组保持完整、绝不改动。
     //   原因：index.ts 里靠 `messages.slice(beforeLen)` 找出本轮新增消息写进会话存档，
     //   如果在循环里就地删消息，beforeLen 的下标就错位了，会话持久化会写坏。
-    let stepMessages: ModelMessage[] = messages
+    const ttlPruned = pruneToolResultsByTtl(messages, messageTimestamps)
+    let stepMessages: ModelMessage[] = ttlPruned.messages
+    if (ttlPruned.softPruned > 0 || ttlPruned.hardCleared > 0) {
+      console.log(` [上下文] TTL 修剪工具结果：软修剪 ${ttlPruned.softPruned} 条，硬清除 ${ttlPruned.hardCleared} 条`)
+    }
+
     const msgTokens = estimateTokens(messages)
     if (msgTokens > CONTEXT_COMPRESS_THRESHOLD) {
-      const compacted = microcompact(messages)
+      const compacted = microcompact(stepMessages)
       if (compacted.cleared > 0) {
         console.log(` [上下文] 清空 ${compacted.cleared} 条旧工具结果，估算 ${msgTokens} token`)
       }
@@ -54,6 +78,16 @@ export async function agentLoop(
         console.log(` [上下文] LLM 摘要压缩 ${compressed.compressedCount} 条旧消息`)
       }
       stepMessages = compressed.messages
+    }
+
+    const oldHistory = pruneOldHistory(
+      stepMessages,
+      Math.floor(CONTEXT_WINDOW_TOKENS * 0.75),
+      Math.floor(CONTEXT_WINDOW_TOKENS * 0.6),
+    )
+    if (oldHistory.removed > 0) {
+      console.log(` [上下文] 剔除 ${oldHistory.removed} 条过老历史消息`)
+      stepMessages = oldHistory.messages
     }
 
     let hasToolCall = false  // 当前这轮是否有工具调用
@@ -68,7 +102,10 @@ export async function agentLoop(
       try {
         const result = streamText({
           model,
-          tools: registry.toAISDKFormat(),
+          tools: registry.toAISDKFormat({
+            contextTokens: estimateMessagesTokens(stepMessages),
+            contextWindowTokens: CONTEXT_WINDOW_TOKENS,
+          }),
           messages: stepMessages,  // [自己加的] 原来传的是 messages，现在传压缩后的那一份
           system,
           maxRetries: 0,  // 不配置重试，就只会跑一次
@@ -97,6 +134,7 @@ export async function agentLoop(
                     role: 'user' as const,
                     content: `[系统提醒] ${detection.message}，请换一个思路解决问题，不要重复同样的操作。`,
                   })
+                  messageTimestamps.push(Date.now())
                 }
               }
 
@@ -137,11 +175,17 @@ export async function agentLoop(
     }
 
     messages.push(...stepResponse!.messages)
+    const responseTimestamp = Date.now()
+    for (let i = 0; i < stepResponse!.messages.length; i++) {
+      messageTimestamps.push(responseTimestamp)
+    }
 
     // Token 预算追踪：记录当前这轮的token用量 (输入+输出 的token计算已经在 streamText 中做了)
     const inp = typeof stepUsage?.inputTokens === 'number' ? stepUsage.inputTokens : ((stepUsage?.inputTokens as any)?.total ?? 0)
     const out = typeof stepUsage?.outputTokens === 'number' ? stepUsage.outputTokens : ((stepUsage?.outputTokens as any)?.total ?? 0)
-    totalTokens += inp + out
+    tokenTracker.recordUsage(inp, out)
+    tokenTracker.estimateAddedMessages(stepResponse!.messages)
+    const totalTokens = tokenTracker.exactUsage.totalTokens
     const pct = Math.round((totalTokens / TOKEN_BUDGET) * 100)
     console.log(` [Token 预算] 已使用 ${totalTokens} / ${TOKEN_BUDGET}，(${pct}%)`)
 

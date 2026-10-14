@@ -1,5 +1,11 @@
 import { jsonSchema } from "ai";
 import type { MCPClient } from './mcp-client'
+import { canTruncateToolResult } from '../context/defense'
+
+export interface ToolContextBudget {
+  contextTokens: number
+  contextWindowTokens: number
+}
 
 export interface ToolDefinition {
   name: string;
@@ -122,7 +128,7 @@ export class ToolRegistry {
     }
   }
 
-  toAISDKFormat(): Record<string, any> {
+  toAISDKFormat(contextBudget?: ToolContextBudget): Record<string, any> {
     const result: Record<string, any> = {};
     const activeTools = this.getActiveTools();  // 
     
@@ -148,6 +154,13 @@ export class ToolRegistry {
           try {
             const raw = await executeFn(input);
             const text = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+            if (contextBudget && !canTruncateToolResult(
+              text,
+              contextBudget.contextTokens,
+              contextBudget.contextWindowTokens,
+            )) {
+              return text
+            }
             return truncateResult(text, maxChars);
           } finally {
             // 无论是否成功，都释放锁

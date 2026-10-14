@@ -46,24 +46,28 @@ export class SessionStore {
 
   // 从会话文件加载消息
   load(): ModelMessage[] {
+    return this.loadEntries().map(entry => entry.message)
+  }
+
+  loadEntries(): SessionEntry[] {
     if (!existsSync(this.filePath)) return []
     const content = readFileSync(this.filePath, 'utf-8').trim()
     if (!content) return []
 
-    const messages: ModelMessage[] = []
+    const entries: SessionEntry[] = []
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
       try {
         const entry: SessionEntry = JSON.parse(line)
         if (entry.type === 'message') {
-          messages.push(entry.message)
+          entries.push(entry)
         }
       } catch {
         // skip malformed lines
       }
     }
 
-    return messages
+    return entries
   }
 
   // 检查会话文件是否存在

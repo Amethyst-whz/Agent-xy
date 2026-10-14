@@ -88,8 +88,11 @@ async function main() {
   const store = new SessionStore(sessionId)
 
   let messages: ModelMessage[] = []
+  const messageTimestamps: number[] = []
   if (isContinue && store.exists()) {
-    messages = store.load()
+    const entries = store.loadEntries()
+    messages = entries.map(entry => entry.message)
+    messageTimestamps.push(...entries.map(entry => new Date(entry.timestamp).getTime()))
     console.log(`[Session] 恢复会话，共 ${messages.length} 条历史消息`);
   } else {
     console.log(`[Session] 新会话`);
@@ -156,9 +159,10 @@ async function main() {
       const userMsg: ModelMessage = { role: 'user', content: trimmed }
       messages.push(userMsg);
       store.append(userMsg)
+      messageTimestamps.push(Date.now())
 
       const beforeLen = messages.length
-      await agentLoop(model, registry, messages, SYSTEM)
+      await agentLoop(model, registry, messages, SYSTEM, messageTimestamps)
 
       // 持久化本轮新增加的消息 （包含Agent Loop 中会往messages里面push的消息）
       const newMessages = messages.slice(beforeLen)

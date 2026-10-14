@@ -1,25 +1,10 @@
 import { generateText, type ModelMessage } from "ai";
 import { textToolResultOutput, toolResultOutputToText } from "./tool-result-output";
+import { estimateMessagesTokens } from './defense'
 
 // 计算对话历史的token数量
 export function estimateTokens(messages: ModelMessage[]) {
-  let chars = 0
-  for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      chars += msg.content.length
-    } else if (Array.isArray(msg.content)) { 
-      for (const part of msg.content) {
-        if ('text' in part && typeof part.text === 'string') {
-          chars += part.text.length
-        } else if ('output' in part) {
-          chars += (toolResultOutputToText(part.output) as string).length
-        }
-      }
-    }
-
-  }
-
-  return Math.ceil(chars / 4)
+  return estimateMessagesTokens(messages)
 }
 
 
@@ -166,4 +151,3 @@ export async function summarize(model: any, messages: ModelMessage[], existingSu
     return { messages, summary: existingSummary || '', compressedCount: 0}
   }
 }
-
