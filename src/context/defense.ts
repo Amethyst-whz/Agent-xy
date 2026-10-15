@@ -23,7 +23,7 @@ export function estimateMessageTokens(message: ModelMessage): number {
       return tokens + estimateTextTokens(toolResultOutputToText(part.output))
     }
     if ('input' in part) {
-      return tokens + estimateTextTokens(JSON.stringify(part.input))
+      return tokens + estimateTextTokens(JSON.stringify(part.input) ?? '')
     }
     return tokens
   }, 0)
@@ -34,9 +34,30 @@ export function estimateMessagesTokens(messages: ModelMessage[]): number {
 }
 
 export class TokenTracker {
+  private lastPreciseCount = 0
+  private pendingChars = 0
   private exactInputTokens = 0
   private exactOutputTokens = 0
   private estimatedAddedTokens = 0
+
+  updateFromAPI(promptTokens: number): void {
+    this.lastPreciseCount = promptTokens
+    this.pendingChars = 0
+  }
+
+  addMessage(message: ModelMessage): void {
+    this.pendingChars += countMessageChars(message)
+  }
+
+  addMessages(messages: ModelMessage[]): void {
+    for (const message of messages) {
+      this.addMessage(message)
+    }
+  }
+
+  repleaceMessage(before: ModelMessage[], after: ModelMessage[]): void {
+    this.pendingChars += countMessagesChars(after) - countMessagesChars(before)
+  }
 
   recordUsage(inputTokens: number, outputTokens: number): void {
     this.exactInputTokens += inputTokens
@@ -47,6 +68,20 @@ export class TokenTracker {
     const estimate = estimateMessagesTokens(messages)
     this.estimatedAddedTokens += estimate
     return estimate
+  }
+
+  get estimatetokens(): number {
+    return Math.max(0, this.lastPreciseCount + Math.ceil(this.pendingChars / 4))
+  }
+
+  get status(): { tokens: number; percent: number; needsAction: boolean } {
+    const tokens = this.estimatetokens
+    const percent = Math.round((tokens / CONST_WIDOW) * 100)
+    return {
+      tokens,
+      percent,
+      needsAction: percent > 75,
+    }
   }
 
   get exactUsage(): { inputTokens: number; outputTokens: number; totalTokens: number } {
@@ -60,6 +95,34 @@ export class TokenTracker {
   get estimatedAddedTokensTotal(): number {
     return this.estimatedAddedTokens
   }
+}
+
+const CONST_WIDOW = 200_000
+
+function countMessageChars(message: ModelMessage): number {
+  if (typeof message.content === 'string') return message.content.length
+  if (!Array.isArray(message.content)) return 0
+
+  return message.content.reduce((chars, part) => {
+    if ('text' in part && typeof part.text === 'string') {
+      return chars + part.text.length
+    }
+    if ('output' in part) {
+      return chars + toolResultOutputToText(part.output).length
+    }
+    if ('input' in part) {
+      return chars + (JSON.stringify(part.input)?.length ?? 0)
+    }
+    return chars
+  }, 0)
+}
+
+function countMessagesChars(messages: ModelMessage[]): number {
+  return messages.reduce((chars, message) => chars + countMessageChars(message), 0)
+}
+
+export function estimateTokens(message: ModelMessage): number {
+  return estimateMessageTokens(message)
 }
 
 export function canTruncateToolResult(
@@ -117,7 +180,7 @@ export function pruneToolResultsByTtl(
     if (age < softTtlMs) return message
 
     let changed = false
-    const content = message.content.map((part) => {
+    const content = message.content.map(part => {
       if (!('output' in part)) return part
       const text = toolResultOutputToText(part.output)
       if (age >= hardTtlMs) {
