@@ -1,38 +1,6 @@
 import type { ModelMessage } from 'ai'
 import { textToolResultOutput, toolResultOutputToText } from './tool-result-output'
 
-export const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
-export const DEFAULT_SOFT_TOOL_RESULT_TTL_MS = 60 * 60 * 1000
-export const DEFAULT_HARD_TOOL_RESULT_TTL_MS = 24 * 60 * 60 * 1000
-
-export function estimateTextTokens(text: string): number {
-  if (!text) return 0
-  const chineseSafetyFactor = /[\u3400-\u9fff]/.test(text) ? 1.2 : 1
-  return Math.ceil((text.length / 4) * chineseSafetyFactor)
-}
-
-export function estimateMessageTokens(message: ModelMessage): number {
-  if (typeof message.content === 'string') return estimateTextTokens(message.content)
-  if (!Array.isArray(message.content)) return 0
-
-  return message.content.reduce((tokens, part) => {
-    if ('text' in part && typeof part.text === 'string') {
-      return tokens + estimateTextTokens(part.text)
-    }
-    if ('output' in part) {
-      return tokens + estimateTextTokens(toolResultOutputToText(part.output))
-    }
-    if ('input' in part) {
-      return tokens + estimateTextTokens(JSON.stringify(part.input) ?? '')
-    }
-    return tokens
-  }, 0)
-}
-
-export function estimateMessagesTokens(messages: ModelMessage[]): number {
-  return messages.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0)
-}
-
 export class TokenTracker {
   private lastPreciseCount = 0
   private pendingChars = 0
@@ -97,7 +65,7 @@ export class TokenTracker {
   }
 }
 
-const CONST_WIDOW = 200_000
+const CONTEXT_WINDOW = 200_000
 
 function countMessageChars(message: ModelMessage): number {
   if (typeof message.content === 'string') return message.content.length
@@ -107,8 +75,8 @@ function countMessageChars(message: ModelMessage): number {
     if ('text' in part && typeof part.text === 'string') {
       return chars + part.text.length
     }
-    if ('output' in part) {
-      return chars + toolResultOutputToText(part.output).length
+    if ('output' in part && part.output !== undefined) {
+      return chars + (toolResultOutputToText(part.output) as string).length
     }
     if ('input' in part) {
       return chars + (JSON.stringify(part.input)?.length ?? 0)
@@ -120,6 +88,128 @@ function countMessageChars(message: ModelMessage): number {
 function countMessagesChars(messages: ModelMessage[]): number {
   return messages.reduce((chars, message) => chars + countMessageChars(message), 0)
 }
+
+
+//----------------------------------------------
+
+export function truncateToolResult(
+  messages: ModelMessage[],
+  config = {
+    maxSingleResult: CONTEXT_WINDOW * 0.5 * 2,  // 50%窗口，2倍安全系数
+    contextBudgetChars: CONTEXT_WINDOW * 0.75 * 4,  // 75%窗口，4倍安全系数
+  }
+): { messages: ModelMessage[]; truncated: number, compacted: number } {
+  let truncated = 0
+  let compacted = 0
+
+  // 1. 单条截断 -- 超过窗口50%的工具结果做 head/tail 分割
+  let result = messages.map(msg => {
+    if (msg.role !== 'tool' || !Array.isArray(msg.content)) return msg;
+
+    const newContent = msg.content.map((part: any) => {
+      if (!part.output) return part;
+      const outputText = toolResultOutputToText(part.output) as string;
+      if (outputText.length <= config.maxSingleResult) return part;
+
+      truncated++;
+      const maxChars = config.maxSingleResult;
+      const headSize = Math.floor(maxChars * 0.6);
+      const tailSize = Math.floor(maxChars * 0.4);
+      const head = outputText.slice(0, headSize);
+      const tail = outputText.slice(-tailSize);
+
+      return {
+        ...part,
+        output: textToolResultOutput(`${head}\n\n[truncated: ${outputText.length} → ${maxChars} chars]\n\n${tail}`),
+      };
+    });
+
+    return { ...msg, content: newContent };
+  });
+  // 2. 总上下文超过窗口75%， 从最老的 tool result 开始清理 (将 output 替换为 占位符)
+  let totalChars = result.reduce((sum, msg) => {
+    if (typeof msg.content === 'string') return sum + msg.content.length;
+    if (Array.isArray(msg.content)) {
+      return sum + (msg.content as any[]).reduce((s, p) =>
+        s + (p.output ? (toolResultOutputToText(p.output) as string).length : (p.text as string)?.length || 0), 0);
+    }
+    return sum;
+  }, 0);
+
+  if (totalChars > config.contextBudgetChars) {
+    for (let i = 0; i < result.length && totalChars > config.contextBudgetChars; i++) {
+      const msg = result[i];
+      if (msg.role !== 'tool' || !Array.isArray(msg.content)) continue;
+      const toolName = ((msg.content as any[])[0])?.toolName || 'unknown';
+      const oldSize = (msg.content as any[]).reduce((s: number, p: any) =>
+        s + (p.output ? (toolResultOutputToText(p.output) as string).length : 0), 0);
+      result[i] = {
+        ...msg,
+        content: (msg.content as any[]).map((p: any) => ({
+          ...p,
+          output: textToolResultOutput(`[compacted: ${toolName} output removed to free context]`),
+        })),
+      };
+      totalChars -= oldSize;
+      compacted++;
+    }
+  }
+
+  return { messages: result, truncated, compacted }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+export const DEFAULT_SOFT_TOOL_RESULT_TTL_MS = 60 * 60 * 1000
+export const DEFAULT_HARD_TOOL_RESULT_TTL_MS = 24 * 60 * 60 * 1000
+
+export function estimateTextTokens(text: string): number {
+  if (!text) return 0
+  const chineseSafetyFactor = /[\u3400-\u9fff]/.test(text) ? 1.2 : 1
+  return Math.ceil((text.length / 4) * chineseSafetyFactor)
+}
+
+export function estimateMessageTokens(message: ModelMessage): number {
+  if (typeof message.content === 'string') return estimateTextTokens(message.content)
+  if (!Array.isArray(message.content)) return 0
+
+  return message.content.reduce((tokens, part) => {
+    if ('text' in part && typeof part.text === 'string') {
+      return tokens + estimateTextTokens(part.text)
+    }
+    if ('output' in part) {
+      return tokens + estimateTextTokens(toolResultOutputToText(part.output))
+    }
+    if ('input' in part) {
+      return tokens + estimateTextTokens(JSON.stringify(part.input) ?? '')
+    }
+    return tokens
+  }, 0)
+}
+
+export function estimateMessagesTokens(messages: ModelMessage[]): number {
+  return messages.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0)
+}
+
+
+
 
 export function estimateTokens(message: ModelMessage): number {
   return estimateMessageTokens(message)
@@ -229,3 +319,4 @@ export function pruneOldHistory(
 
   return { messages, removed: 0 }
 }
+
